@@ -16,7 +16,12 @@ int main(int argc, char** argv)
 
     cmd_append(&cmd, "-o", BUILD_FOLDER"music_player", "music_player.c");
     // linking
+#ifdef _WIN32
     cmd_append(&cmd, "-lraylib", "-lopengl32", "-lgdi32", "-lwinmm");
+#else
+    // You gotta tweak this if it doesnt work
+    cmd_append(&cmd, "lraylib", "-lm", "-lpthread", "-ldl", "-lX11");
+#endif
     if (!cmd_run(&cmd)) return 1;
     cmd.count = 0;
 
