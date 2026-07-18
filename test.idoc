@@ -1,0 +1,8 @@
+Program:
+
+  Resolution:
+    width = 800
+    height = 600
+  Colors:
+    background = (0, 0, 10, 255) # Tuple (R,G,B,A)
+    foreground = (100, 0, 0, 255)
