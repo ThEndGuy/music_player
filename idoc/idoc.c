@@ -182,7 +182,7 @@ int main(int argc, char** argv){
     }
 
     exit(0);
-    Lexer l = lex_init("./test.idoc");
+    Lexer l = lex_init("./tests/test.idoc");
     while (l.data.count > 0) {
         Line line = lexer_next_line(&l);
         printf("%d:", l.line);
