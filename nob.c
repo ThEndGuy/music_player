@@ -1,11 +1,14 @@
-
-
 #define NOB_IMPLEMENTATION
 #include "./include/nob.h"
 
 #define BUILD_FOLDER "./build/"
+#define IDOC_FOLDER "./idoc/"
 
 int main(int argc, char** argv) {
+    char *exe_path = temp_running_executable_path();
+    char *exe_dir = temp_dir_name(exe_path);
+    if (!set_current_dir(exe_dir)) return 1;
+    argv[0] = exe_path;
     NOB_GO_REBUILD_URSELF(argc, argv);
     // for (int i = 0; i < argc; i++) {
     //     printf("%d = %s\n", i, argv[i]);
@@ -27,7 +30,7 @@ int main(int argc, char** argv) {
     cmd.count = 0;
 
     cmd_append(&cmd, "cc", "-Wall", "-Wextra");
-    cmd_append(&cmd, "-o", BUILD_FOLDER"idoc", "idoc.c");
+    cmd_append(&cmd, "-o", BUILD_FOLDER"idoc", IDOC_FOLDER"idoc.c");
     if (!cmd_run(&cmd)) return 1;
 
     cmd.count = 0;
