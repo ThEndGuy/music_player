@@ -1,8 +1,8 @@
 Program:
-  Name = "Music Player"
-  Resolution:
-    width = 800
-    height = 600
+  Name =      "Music Player"        
+  Resolution:     
+    width =    800
+    height =   Program.Resolution.width
   Colors:
-    background = (0, 0, 10, 255) # Tuple (R,G,B,A)
+    background = (0.3, 1.6, 10, 255) # Tuple (R,G,B,A)
     foreground = (100, 0, 0, 255)
