@@ -49,7 +49,6 @@ const char *token_by_name(Token_Type type)
     case TOKEN_UNINDENT:  return "TOKEN_UNINDENT";
     case TOKEN_NL:        return "TOKEN_NL";
     case TOKEN_UNDEFINED: return "TOKEN_UNDEFINED";
-
     default:              return "UNKNOWN";
     }
 }
@@ -80,6 +79,7 @@ typedef struct {
     int line;
     String_View sv;
     char* file;
+    bool at_start;
     Indent exp_ind;
 
     Indent last_ind;
@@ -107,15 +107,17 @@ Lexer lex_init(char* file_name){
       .line = 0,
       .sv = sv,
       .file = file_name,
-      .exp_ind = (Indent){WS_UNSET, 0}
+      .exp_ind = (Indent){WS_UNSET, 0},
+      .at_start = true
     };
 }
 
-void strip_comment(String_View *sv) {
-    *sv = sv_chop_by_delim(sv, COMMENT_CHAR);
-}
 
 bool lexer_check_whitespace(Lexer *l, whitespace_type ws, size_t length){
+    if (!l->at_start){
+        return false;
+        }
+    l->at_start = false;
     if (l->exp_ind.type != WS_UNSET){
         if (l->exp_ind.type != ws || length % l->exp_ind.count != 0) {
             return false;
@@ -207,6 +209,7 @@ Token lexer_next_token(Lexer *l){
     }
     else if (c == '\n') {
         sv_chop_left(&l->sv, 1);
+        l->at_start = true;
         return (Token){.type = TOKEN_NL, .sv = sv_from_cstr("\\n")};
     }
     else if (c == ':') {
@@ -250,9 +253,15 @@ Token lexer_next_token(Lexer *l){
             sv_chop_left(&l->sv, 1);
             c = l->sv.data[0];
             if (c == '\n') {
+                sv_chop_left(&l->sv, 1);
+                l->at_start = true;
                 return (Token){.type = TOKEN_NL, .sv = sv_from_cstr("\\n")};
             }
         }
+    }
+    else if (c == '.') {
+        sv_chop_left(&l->sv, 1);
+        return (Token){.type = TOKEN_DOT, .sv = sv_from_cstr(".")};
     }
     else {
         String_View sv = {.data = &l->sv.data[0], .count = 1};
@@ -299,7 +308,8 @@ int main(int argc, char** argv){
     (void) argc;
     (void) argv;
     Lexer l = lex_init("./idoc/tests/test.idoc");
-    parse_tokens(&l);
+    //dump_tokens(&l);
+    //parse_tokens(&l);
 
     return 0;
 
