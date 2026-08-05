@@ -141,94 +141,94 @@ Token lexer_next_token(Lexer *l){
             sv_chop_left(&l->sv, 1);
             length++;
             c = l->sv.data[0];
-        } else if (c == '\t'){
+        } else if (c == '\t') {
             ws = WS_TAB;
             sv_chop_left(&l->sv, 1);
             length++;
             c = l->sv.data[0];
-        } else if (c == '\r'){ // windows carriage return..
+        } else if (c == '\r') { // windows carriage return..
             sv_chop_left(&l->sv, 1);
             c = l->sv.data[0];
-        } else break;
+        } else
+            break;
     }
+    // If there is a whitespace, handle it:
     if (length > 0) {
+        l->col += length;
         if (lexer_check_whitespace(l, ws, length)) {
             if (l->last_ind.count < length) {
                 l->last_ind = (Indent){.type = ws, .count = length};
-                return (Token){
-                    .type = TOKEN_INDENT,
-                    .sv = sv_from_cstr("->")
-                };
+                return (Token){.type = TOKEN_INDENT, .sv = sv_from_cstr("->")};
             } else if (l->last_ind.count > length) {
                 l->last_ind = (Indent){.type = ws, .count = length};
-                return (Token){
-                    .type = TOKEN_UNINDENT,
-                    .sv = sv_from_cstr("<-")
-                };
+                return (Token){.type = TOKEN_UNINDENT,
+                               .sv = sv_from_cstr("<-")};
             }
         }
     }
     length = 0;
-    const char* start = l->sv.data;
+    const char *start = l->sv.data;
     if (isdigit(c)) {
         Token_Type tt = TOKEN_INT;
         while (true) {
             sv_chop_left(&l->sv, 1);
             length++;
             c = l->sv.data[0];
-            if (c == '.') tt = TOKEN_FLOAT;
-            else if (!isdigit(c)) break;
+            if (c == '.')
+                tt = TOKEN_FLOAT;
+            else if (!isdigit(c))
+                break;
         }
-        String_View number = {
-            .data = start,
-            .count = length
-        };
+        l->col += length;
+        String_View number = {.data = start, .count = length};
         return (Token){.type = tt, .sv = number};
-    }
-    else if (isalpha(c)){
+    } else if (isalpha(c)) {
         while (true) {
             sv_chop_left(&l->sv, 1);
             length++;
             c = l->sv.data[0];
-            if (!isalpha(c) && !isdigit(c)) break;
+            if (!isalpha(c) && !isdigit(c))
+                break;
         }
         String_View variable = {
             .data = start,
             .count = length,
         };
-        return (Token){.type = TOKEN_VAR, .sv = variable };
-    }
-    else if (c == '='){
+        l->col += length;
+        return (Token){.type = TOKEN_VAR, .sv = variable};
+    } else if (c == '=') {
+        length += 1;
         sv_chop_left(&l->sv, 1);
         String_View eq = {
             .data = start,
-            .count = 1,
+            .count = length,
         };
-        return (Token){.type = TOKEN_EQUAL, .sv = eq };
+        l->col += length;
+        return (Token){.type = TOKEN_EQUAL, .sv = eq};
 
-    }
-    else if (c == '\n') {
+    } else if (c == '\n') {
         sv_chop_left(&l->sv, 1);
         l->at_start = true;
+        l->line += 1;
+        l->col = 1;
         return (Token){.type = TOKEN_NL, .sv = sv_from_cstr("\\n")};
-    }
-    else if (c == ':') {
+    } else if (c == ':') {
         sv_chop_left(&l->sv, 1);
+        l->col += 1;
         return (Token){.type = TOKEN_COLON, .sv = sv_from_cstr(":")};
-    }
-    else if (c == '(') {
+    } else if (c == '(') {
         sv_chop_left(&l->sv, 1);
+        l->col += 1;
         return (Token){.type = TOKEN_OPAREN, .sv = sv_from_cstr("(")};
-    }
-    else if (c == ')') {
+    } else if (c == ')') {
         sv_chop_left(&l->sv, 1);
+        l->col += 1;
         return (Token){.type = TOKEN_CPAREN, .sv = sv_from_cstr(")")};
-    }
-    else if (c == '"') {
+    } else if (c == '"') {
         sv_chop_left(&l->sv, 1);
         length++;
         c = l->sv.data[0];
-        while (c != '"'){
+        while (c != '"') {
             sv_chop_left(&l->sv, 1);
             if (l->sv.count == 0) {
                 error(l->file, l->line, length, "Unbalanced '\"'.");
@@ -242,11 +242,11 @@ Token lexer_next_token(Lexer *l){
             .data = start,
             .count = length,
         };
-        return (Token){.type = TOKEN_STR, .sv = str };
+        l->col += length;
+        return (Token){.type = TOKEN_STR, .sv = str};
 
-    }
-    else if (c == COMMENT_CHAR){
-        while (true){
+    } else if (c == COMMENT_CHAR) {
+        while (true) {
             if (l->sv.count == 0) {
                 return (Token){.type = TOKEN_EOF, .sv = sv_from_cstr("EOF")};
             }
@@ -255,40 +255,65 @@ Token lexer_next_token(Lexer *l){
             if (c == '\n') {
                 sv_chop_left(&l->sv, 1);
                 l->at_start = true;
+                l->col = 1;
+                l->line += 1;
                 return (Token){.type = TOKEN_NL, .sv = sv_from_cstr("\\n")};
             }
         }
-    }
-    else if (c == '.') {
+    } else if (c == '.') {
         sv_chop_left(&l->sv, 1);
+        l->col += 1;
         return (Token){.type = TOKEN_DOT, .sv = sv_from_cstr(".")};
-    }
-    else {
+    } else {
         String_View sv = {.data = &l->sv.data[0], .count = 1};
         sv_chop_left(&l->sv, 1);
+        l->col += 1;
         return (Token){.type = TOKEN_UNDEFINED, .sv = sv};
     }
 }
 
-Line __debug_line(char* text){
-    Line line = (Line){
-        .ind = (Indent){' ', 1},
-        .sv = sv_from_cstr(text),
-        .level = 0
-    };
-    return line;
+void print_token(Token t) {
+    printf(SV_Fmt " => %s\n", SV_Arg(t.sv), token_by_name(t.type));
 }
-void dump_tokens(Lexer *l){
+
+void dump_tokens(Lexer *l) {
     Token t;
     do {
         t = lexer_next_token(l);
-        printf(SV_Fmt" => %s\n", SV_Arg(t.sv), token_by_name(t.type));
+        print_token(t);
     } while (t.type != TOKEN_EOF);
+}
+
+
+Parser parser_init(char *file_name) {
+    Parser parser = {
+        .lexer = lexer_init(file_name),
+    };
+    parser.current = lexer_next_token(&parser.lexer);
+    return parser;
+}
+
+Token parser_peek(Parser *p) { return p->current; }
+
+Token parser_consume(Parser *p) {
+    Token t = p->current;
+    p->current = lexer_next_token(&p->lexer);
+    return t;
+}
+
+bool parser_expect(Parser *p, Token_Type exp_tok) {
+    Token token = parser_peek(p);
+    if (token.type != exp_tok) {
+        error(p->lexer.file, p->lexer.line, p->lexer.col,
+              "Error while parsing: expected: %s  got: %s  ("SV_Fmt")",
+              token_by_name(exp_tok), token_by_name(token.type), SV_Arg(token.sv));
+    }
+    return true;
 }
 
 void parse_tokens(Lexer *l) {
     Token t;
-    while (t.type != TOKEN_EOF){
+    while (t.type != TOKEN_EOF) {
         t = lexer_next_token(l);
         switch (t.type) {
         case TOKEN_INT: {
