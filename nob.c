@@ -3,6 +3,7 @@
 
 #define BUILD_FOLDER "./build/"
 #define IDOC_FOLDER "./idoc/"
+#define LIB_FOLDER "./lib/"
 
 int main(int argc, char** argv) {
     char *exe_path = temp_running_executable_path();
@@ -10,23 +11,27 @@ int main(int argc, char** argv) {
     if (!set_current_dir(exe_dir)) return 1;
     argv[0] = exe_path;
     NOB_GO_REBUILD_URSELF(argc, argv);
-    // for (int i = 0; i < argc; i++) {
-    //     printf("%d = %s\n", i, argv[i]);
-    // }
     shift(argv, argc);
     Cmd cmd = {0};
     cmd_append(&cmd, "cc", "-Wall", "-Wextra");
-    cmd_append(&cmd, "-Iinclude","-Llib");
+    cmd_append(&cmd, "-Iinclude");
 
     cmd_append(&cmd, "-o", BUILD_FOLDER"music_player", "music_player.c");
     // linking
 #ifdef _WIN32
+    cmd_append(&cmd, "-Llib/windows");
     cmd_append(&cmd, "-lraylib", "-lopengl32", "-lgdi32", "-lwinmm");
 #else
     // You gotta tweak this if it doesnt work
-    cmd_append(&cmd, "lraylib", "-lm", "-lpthread", "-ldl", "-lX11");
+    cmd_append(&cmd, "-lraylib", "-lm", "-lpthread", "-ldl", "-lX11");
 #endif
-    if (!cmd_run(&cmd)) return 1;
+    if (!cmd_run(&cmd)){
+#ifdef _WIN32
+#else
+        nob_log(NOB_ERROR, "Make sure you have raylib installed!");
+#endif
+        return 1;
+    }
     cmd.count = 0;
 
     cmd_append(&cmd, "cc", "-Wall", "-Wextra");
