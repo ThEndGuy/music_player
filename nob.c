@@ -15,7 +15,7 @@ void usage(){
 }
 
 int build_idoc(Cmd *cmd){
-    cmd_append(cmd, "cc", "-Wall", "-Wextra");
+    cmd_append(cmd, "cc", "-ggdb", "-Wall", "-Wextra");
     cmd_append(cmd, "-o", BUILD_FOLDER"idoc", IDOC_FOLDER"idoc.c");
     if (!cmd_run(cmd)) return false;
     return true;
