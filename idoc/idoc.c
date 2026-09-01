@@ -89,11 +89,25 @@ typedef struct {
     Indent last_ind;
 } Lexer;
 
+typedef enum {
+    NODE_ASSIGNMENT,
+} Node_Type;
+
+typedef struct {
+    String_View *items;
+    size_t count;
+    size_t capacity;
+} Reference;
+
 typedef struct Node {
     String_View key;
-    String_View value;
+    union {
+        String_View sv;
+        int integer;
+        Reference ref;
+    } as;
 
-    struct Node *children;
+    struct Node *items; // children
     size_t count;
     size_t capacity;
 } Node;
@@ -102,6 +116,20 @@ typedef struct {
     Lexer lexer;
     Token current;
 } Parser;
+
+int sv_to_int(String_View sv) {
+    int sign = 1;
+    int result = 0;
+    size_t i = 0;
+    if (sv.count > 0 && sv.data[0] == '-') { // Negative number
+        sign = -1;
+        i++;
+    }
+    for (; i < sv.count; i++) {
+        result = result * 10 + (sv.data[i] - '0');
+    }
+    return result * sign;
+}
 
 void error(char *file_name, int line, int col, const char *fmt, ...) {
     va_list args;
@@ -113,6 +141,18 @@ void error(char *file_name, int line, int col, const char *fmt, ...) {
     va_end(args);
     exit(1);
 }
+
+void l_error(Lexer l, const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    //nob_log(NOB_ERROR, "%s:%d:%d: test ", file_name, line, col);
+    fprintf(stderr, "%s:%d:%d: ", l.file, l.line, l.col);
+    vfprintf(stderr, fmt, args);
+    fprintf(stderr, "\n");
+    va_end(args);
+    exit(1);
+}
+
 
 Lexer lexer_init(char *file_name) {
     String_Builder sb = {0};
@@ -196,7 +236,22 @@ Token lexer_next_token(Lexer *l) {
         l->col += length;
         String_View number = {.data = start, .count = length};
         return (Token){.type = tt, .sv = number};
-    } else if (isalpha(c)) {
+    } else if (c == '-' && isdigit(l->sv.data[1])) { // The next must be a number
+        Token_Type tt = TOKEN_INT;
+        while (true) {
+            sv_chop_left(&l->sv, 1);
+            length++;
+            c = l->sv.data[0];
+            if (c == '.')
+                tt = TOKEN_FLOAT;
+            else if (!isdigit(c))
+                break;
+        }
+        l->col += length;
+        String_View number = {.data = start, .count = length};
+        return (Token){.type = tt, .sv = number};
+    }
+    if (isalpha(c)) {
         while (true) {
             sv_chop_left(&l->sv, 1);
             length++;
@@ -315,14 +370,14 @@ Token parser_consume(Parser *p) {
     return t;
 }
 
-bool parser_expect(Parser *p, Token_Type exp_tok) {
-    Token token = parser_peek(p);
+Token parser_expect(Parser *p, Token_Type exp_tok) {
+    Token token = parser_consume(p);
     if (token.type != exp_tok) {
         error(p->lexer.file, p->lexer.line, p->lexer.col,
               "Error while parsing: expected: %s  got: %s  ("SV_Fmt")",
               token_by_name(exp_tok), token_by_name(token.type), SV_Arg(token.sv));
     }
-    return true;
+    return token;
 }
 
 void parse_tokens(Lexer *l) {
@@ -343,23 +398,98 @@ void parse_tokens(Lexer *l) {
     }
 }
 
-int main(int argc, char **argv) {
-    (void)argc;
-    (void)argv;
+Node parse_block(Parser *p, int indent_level) {
+    Token t;
+    Node n = {0};
+    if (indent_level == 0) n.key = sv_from_cstr("MAIN");
+    while (p->current.type != TOKEN_EOF && p->current.type != TOKEN_UNINDENT) {
+        if (parser_peek(p).type == TOKEN_NL) {
+            parser_consume(p);
+            continue;
+        }
+        t = parser_expect(p, TOKEN_VAR);
+        Token next = parser_peek(p);
+        if (next.type == TOKEN_COLON) {
+            parser_consume(p); // colon
+            parser_expect(p, TOKEN_NL);
+            parser_expect(p, TOKEN_INDENT);
+            Node sub_n = parse_block(p, indent_level + 1);
+            sub_n.key = t.sv;
+            da_append(&n, sub_n);
+        } else if (next.type == TOKEN_EQUAL) {
+            parser_consume(p); // equal
+            Token var = parser_consume(p); // whatever the assignment is
+            switch (var.type) {
+            case TOKEN_STR: {
+                Node sub_n = {.key = t.sv, .as.sv = var.sv};
+                da_append(&n, sub_n);
+            } break;
+            case TOKEN_INT: {
+                Node sub_n = {.key = t.sv, .as.integer = sv_to_int(var.sv)};
+                da_append(&n, sub_n);
+            } break;
+            case TOKEN_VAR: { // GLOBAL REFERENCE
+                parser_expect(p, TOKEN_DOT);
+                Reference ref = {0};
+                da_append(&ref, var.sv);
+                while (true) {
+                    Token v = parser_expect(p, TOKEN_VAR);
+                    da_append(&ref, v.sv);
+                    if (parser_consume(p).type != TOKEN_DOT) break;
+                }
+                Node sub_n = {.key = t.sv, .as.ref = ref};
+                da_append(&n, sub_n);
+            } break;
+            case TOKEN_DOT: { // LOCAL REFERENCE
+                Reference ref = {0};
+                da_append(&ref, var.sv);
+                while (true) {
+                    Token v = parser_expect(p, TOKEN_VAR);
+                    da_append(&ref, v.sv);
+                    if (parser_consume(p).type != TOKEN_DOT) break;
+                }
+                Node sub_n = {.key = t.sv, .as.ref = ref};
+                da_append(&n, sub_n);
+            } break;
+            default: {
+                l_error(p->lexer, "Unknown token: %s ("SV_Fmt")", token_by_name(t.type), SV_Arg(t.sv));
+            } break;
 
-    Parser p = parser_init("./idoc/tests/test.idoc");
-    //Parser p = parser_init(argv[1]);
-    print_token(p.current);
-    printf("col = %d\n", p.lexer.col);
-    for (int i = 0; i < 6; i++) {
-        print_token(parser_consume(&p));
-        printf("col = %d\n", p.lexer.col);
-    };
-    parser_expect(&p, TOKEN_VAR);
-    exit(0);
-    const char *t = token_by_name(parser_consume(&p).type);
-    printf("t = %s", t);
-    // parse_tokens(&l);
+            }
+        } else {
+            l_error(p->lexer, "Unknown token: %s ("SV_Fmt")", token_by_name(t.type), SV_Arg(t.sv));
+        }
+    }
+    return n;
+}
+
+typedef struct {
+    Node *node;
+    bool is_valid;
+} Node_Ret;
+
+Node_Ret node_find_child(Node *parent, String_View key) {
+    da_foreach(Node, it, parent) {
+        if (nob_sv_eq(it->key, key)) {
+            return (Node_Ret){.node = it, .is_valid = true};
+        }
+    }
+    return (Node_Ret){.is_valid = false};
+}
+
+int main(void) {
+
+    Parser p = parser_init("./idoc/tests/simple_test.idoc");
+    Node n = parse_block(&p, 0);
+    // for (Type *it = (da)->items; it < (da)->items + (da)->count; ++it)
+
+    Node_Ret nr = node_find_child(&n, sv_from_cstr("Testing"));
+    if (!nr.is_valid) nob_log(NOB_ERROR, "Could not find child");
+    printf(SV_Fmt"\n", SV_Arg(nr.node->key));
+
+    printf(SV_Fmt"\n", SV_Arg(n.key));
+    printf(SV_Fmt"\n", SV_Arg(n.items[0].key));
+    printf(SV_Fmt"\n", SV_Arg(n.items[0].items[0].as.sv));
 
     return 0;
 }
