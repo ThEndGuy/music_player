@@ -73,8 +73,8 @@ int main(int argc, char** argv) {
             exit(0);
         }
         else {
-            nob_log(NOB_ERROR, "Unknown command `%s`", flag);
             usage();
+            nob_log(NOB_ERROR, "Unknown command `%s`", flag);
             exit(1);
         }
     } else {
