@@ -3,7 +3,7 @@ Program:
   Resolution:     
     width =    800
     height =   Program.Resolution.width
-    test = -1
   Colors:
     background = (0.3, 1.6, 10, 255) # Tuple (R,G,B,A)
     foreground = (100, 0, 0, 255)
+    test = ("hi", "there")
