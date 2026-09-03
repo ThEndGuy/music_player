@@ -1,9 +1,10 @@
 #include <stdarg.h>
+#include <stdlib.h>
 #include <stdbool.h>
 #include <stdio.h>
 
-#define NOB_IMPLEMENTATION
-#include "../include/nob.h"
+// #define NOB_IMPLEMENTATION
+// #include "../include/nob.h"
 
 #define COMMENT_CHAR '#'
 
@@ -70,8 +71,19 @@ const char *token_by_name(Token_Type type) {
 }
 
 typedef struct {
+    char *items;
+    size_t count;
+    size_t capacity;
+} Idoc_SB;
+
+typedef struct {
+    size_t count;
+    const char *data;
+} Idoc_SV;
+
+typedef struct {
     Token_Type type;
-    String_View sv;
+    Idoc_SV sv;
 } Token;
 
 typedef struct {
@@ -86,7 +98,7 @@ typedef struct {
 
 typedef struct {
     Loc loc;
-    String_View sv;
+    Idoc_SV sv;
     const char *file;
     bool at_start;
     Indent exp_ind;
@@ -116,11 +128,11 @@ typedef struct Value Value;
 struct Value {
     Value_Type type;
     union {
-        String_View string;
+        Idoc_SV string;
         int integer;
         double floating;
         struct {
-            String_View *items;
+            Idoc_SV *items;
             size_t count;
             size_t capacity;
         } ref;
@@ -133,7 +145,7 @@ struct Value {
 };
 
 typedef struct Node {
-    String_View key;
+    Idoc_SV key;
     Value value;
     Loc loc;
 
@@ -151,7 +163,45 @@ typedef struct {
     Node root;
 } Idoc;
 
-String_View sv_unquote(String_View sv) {
+
+bool Idoc_read_entire_file(const char *path, Idoc_SB *sb)
+    {
+    bool result = true;
+
+    FILE *f = fopen(path, "rb");
+    size_t new_count = 0;
+    long long m = 0;
+    if (f == NULL)                 nob_return_defer(false);
+    if (fseek(f, 0, SEEK_END) < 0) nob_return_defer(false);
+#ifndef _WIN32
+    m = ftell(f);
+#else
+    m = _telli64(_fileno(f));
+#endif
+    if (m < 0)                     nob_return_defer(false);
+    if (fseek(f, 0, SEEK_SET) < 0) nob_return_defer(false);
+
+    new_count = sb->count + m;
+    if (new_count > sb->capacity) {
+        sb->items = NOB_DECLTYPE_CAST(sb->items)NOB_REALLOC(sb->items, new_count);
+        NOB_ASSERT(sb->items != NULL && "Buy more RAM lool!!");
+        sb->capacity = new_count;
+    }
+
+    fread(sb->items + sb->count, m, 1, f);
+    if (ferror(f)) {
+        // TODO: Afaik, ferror does not set errno. So the error reporting in defer is not correct in this case.
+        nob_return_defer(false);
+    }
+    sb->count = new_count;
+
+defer:
+    if (!result) nob_log(NOB_ERROR, "Could not read file %s: %s", path, strerror(errno));
+    if (f) fclose(f);
+    return result;
+}
+
+Idoc_SV sv_unquote(Idoc_SV sv) {
     if (sv.count >= 2 && sv.data[0] == '"' && sv.data[sv.count - 1] == '"') {
         sv.data++;
         sv.count -= 2;
@@ -159,7 +209,7 @@ String_View sv_unquote(String_View sv) {
     return sv;
 }
 
-int sv_to_int(String_View sv) {
+int sv_to_int(Idoc_SV sv) {
     int sign = 1;
     int result = 0;
     size_t i = 0;
@@ -173,7 +223,7 @@ int sv_to_int(String_View sv) {
     return result * sign;
 }
 
-double sv_to_double(String_View sv) {
+double sv_to_double(Idoc_SV sv) {
     double sign = 1.0f;
     double result = 0.0f;
     double fractional = 0.1f;
@@ -206,22 +256,10 @@ void error(char *file_name, int line, int col, const char *fmt, ...) {
     exit(1);
 }
 
-void l_error(Lexer l, const char *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    //nob_log(NOB_ERROR, "%s:%d:%d: test ", file_name, line, col);
-    fprintf(stderr, "%s:%d:%d: ", l.file, l.loc.line, l.loc.col);
-    vfprintf(stderr, fmt, args);
-    fprintf(stderr, "\n");
-    va_end(args);
-    exit(1);
-}
-
-
 Lexer lexer_init(const char *file_name) {
-    String_Builder sb = {0};
+    Idoc_SB sb = {0};
     read_entire_file(file_name, &sb);
-    String_View sv = sb_to_sv(sb);
+    Idoc_SV sv = sb_to_sv(sb);
     return (Lexer){.loc.line = 1,
                    .loc.col = 1,
                    .sv = sv,
@@ -298,7 +336,7 @@ Token lexer_next_token(Lexer *l) {
                 break;
         }
         l->loc.col += length;
-        String_View number = {.data = start, .count = length};
+        Idoc_SV number = {.data = start, .count = length};
         return (Token){.type = tt, .sv = number};
     } else if (c == '-' && isdigit(l->sv.data[1])) { // The next must be a number
         Token_Type tt = TOKEN_INT;
@@ -312,7 +350,7 @@ Token lexer_next_token(Lexer *l) {
                 break;
         }
         l->loc.col += length;
-        String_View number = {.data = start, .count = length};
+        Idoc_SV number = {.data = start, .count = length};
         return (Token){.type = tt, .sv = number};
     }
     if (isalpha(c)) {
@@ -323,7 +361,7 @@ Token lexer_next_token(Lexer *l) {
             if (!isalpha(c) && !isdigit(c))
                 break;
         }
-        String_View variable = {
+        Idoc_SV variable = {
             .data = start,
             .count = length,
         };
@@ -332,7 +370,7 @@ Token lexer_next_token(Lexer *l) {
     } else if (c == '=') {
         length += 1;
         sv_chop_left(&l->sv, 1);
-        String_View eq = {
+        Idoc_SV eq = {
             .data = start,
             .count = length,
         };
@@ -376,7 +414,7 @@ Token lexer_next_token(Lexer *l) {
         }
         sv_chop_left(&l->sv, 1);
         length++;
-        String_View str = {
+        Idoc_SV str = {
             .data = start,
             .count = length,
         };
@@ -403,7 +441,7 @@ Token lexer_next_token(Lexer *l) {
         l->loc.col += 1;
         return (Token){.type = TOKEN_DOT, .sv = sv_from_cstr(".")};
     } else {
-        String_View sv = {.data = &l->sv.data[0], .count = 1};
+        Idoc_SV sv = {.data = &l->sv.data[0], .count = 1};
         sv_chop_left(&l->sv, 1);
         l->loc.col += 1;
         return (Token){.type = TOKEN_UNDEFINED, .sv = sv};
@@ -540,7 +578,7 @@ typedef struct {
     bool is_valid;
 } Node_Ret;
 
-Node_Ret node_find_child(Node *parent, String_View key) {
+Node_Ret node_find_child(Node *parent, Idoc_SV key) {
     da_foreach(Node, it, parent) {
         if (sv_eq(it->key, key)) {
             return (Node_Ret){.node = it, .is_valid = true};
@@ -820,23 +858,3 @@ bool idoc_get_tuple_cstr(Idoc *idoc, const char **out, size_t capacity, ...) {
 // types: int, double, cstring
 #define idoc_get(type, idoc, def, ...) idoc_get_##type(idoc, def, __VA_ARGS__, NULL)
 #define idoc_get_tuple(type, idoc, out, ...) idoc_get_tuple_##type(idoc, out, ARRAY_LEN(out), __VA_ARGS__, NULL)
-
-int main(void) {
-    // "Program" "Colors" "Background"
-
-    char *file_name = "./idoc/tests/test.idoc";
-    Idoc idoc = idoc_init(file_name);
-    /* const char *program_name = idoc_get(cstr, &idoc, "oops", "Program", "Name"); */
-    /* printf("%s\n", program_name); */
-    /* int width = idoc_get(int, &idoc, -1, "Program", "Resolution", "width"); */
-    /* int height = idoc_get(int, &idoc, -1, "Program", "Resolution", "height"); */
-    /* printf("%d\n", width); */
-    /* printf("%d\n", height); */
-    const char *bg[2];
-    if (!idoc_get_tuple(cstr, &idoc, bg, "Program", "Colors", "test")) {printf("Failed");}
-    for (size_t i = 0; i < 2; i++) {
-        printf("%s\n", bg[i]);
-    }
-
-    return 0;
-}
