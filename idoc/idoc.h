@@ -1,3 +1,21 @@
+// IDOC - Indentation DOCument.
+// This single-header library is used to parse idoc files.
+// To learn how to write an idoc file, read the README.
+
+// The idea of this library is to be able to hot reload settings
+// about your application, without ever raising errors even
+// if something is missing.
+
+// You start by doing
+// Then check if it errored out
+//     Idoc idoc = idoc_init("filename");
+//     if (!idoc.is_valid) exit(1);
+// Then use the various helper functions to get specific values from the document.
+// Those functions are explained below.
+
+#ifndef IDOC_H
+#define IDOC_H
+
 #include <stdarg.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -6,6 +24,110 @@
 #include <errno.h>
 #include <ctype.h>
 
+// This is the main structure you work with
+typedef struct Idoc Idoc;
+
+// You start by parsing the file using idoc_init
+Idoc idoc_init(const char *file_name);
+// Make sure to check if its valid!! The file can fail to read.
+// Example:
+#if 0
+    Idoc idoc = idoc_init("filename");
+    if (!idoc.is_valid) exit(1); // or do whatever you want here
+#endif
+
+// Suppose your .idoc file looks like this:
+//
+// Program:
+//   Name = "ProgramName"
+//
+// To get the program name, you use the corresponding function
+// Example:
+#if 0
+    char *name = idoc_get_cstr(&idoc, "default_name", "Program", "Name", NULL);
+#endif
+// Notice how we get the string by tracing out the nested path to what we want,
+// and terminate it by NULL.
+// If theres any error retrieving (a.k.a. doesnt exist or is invalid) the
+// default name will be used.
+//
+// You can use the following functions to get each type of field:
+int          idoc_get_int(Idoc *idoc, int def_int, ...);
+double       idoc_get_double(Idoc *idoc, double def_double, ...);
+// The user must manually free the cstring, IT IS NOT FREED BY idoc_free
+char        *idoc_get_cstr(Idoc *idoc, const char *def_str, ...);
+
+// For tuples, you must define an array of the same size as the tuple,
+// and pass it.
+// These functions will return true if succeeded or false if not,
+// as not to stop the program even if something goes wrong.
+// It will return false if the type is incorrect, or if the size
+// is incorrect.
+
+// Suppose our new .idoc file looks like this:
+//
+// Program:
+//   Name = "ProgramName"
+//   Palette:
+//     Color = (255, 255, 0)
+//
+// Then, to get this color tuple, we do the following
+// Example:
+#if 0
+    int color[3];
+    idoc_get_tuple_int(&idoc, color, 3, "Program", "Palette", "Color", NULL);
+#endif
+// Note that we must pass the capacity of the array using this function,
+// and again, pass the NULL as the last value.
+// We define an easier more straightforward way of getting the same value
+// using macros below.
+// Here are the tuple functions:
+bool         idoc_get_tuple_int(Idoc *idoc, int *out, size_t capacity, ...);
+bool         idoc_get_tuple_double(Idoc *idoc, double *out, size_t capacity, ...);
+bool         idoc_get_tuple_cstr(Idoc *idoc, char **out, size_t capacity, ...);
+
+// Finally, after getting all you want from the file, you can use idoc_free to
+// free the whole object. Don't forget that idoc_get_cstr doesnt get freed here!!
+void idoc_free(Idoc *idoc);
+
+#define IDOC_ARRAY_LEN(arr) (sizeof(arr) / sizeof((arr)[0]))
+// For the convinience of the user, there are macros provided using the syntax
+// idoc_get(&idoc, TYPE, DEFAULT, ...);
+// So, using the same .idoc file defined above:
+//
+// Program:
+//   Name = "ProgramName"
+//   Palette:
+//     Color = (255, 255, 0)
+//
+// We can get the same information as before as following:
+// Example:
+#if 0
+    char *name = idoc_get(&idoc, cstr, "default_name", "Program", "Name")
+    int color[3];
+    idoc_get_tuple_int(&idoc, color, "Program", "Palette", "Color");
+#endif
+// Using macros, you dont need to pass the last NULL, nor pass the size of the
+// array.
+// Here are all the types idoc supports: int, double, cstr
+#define idoc_get(idoc, type, def, ...) idoc_get_##type(idoc, def, __VA_ARGS__, NULL)
+#define idoc_get_tuple(idoc, type, out, ...) idoc_get_tuple_##type(idoc, out, IDOC_ARRAY_LEN(out), __VA_ARGS__, NULL)
+
+
+// In case of an incorrect type, it automatically prints to stderr a warning.
+// If you dont want this behavior, define the following before including this
+// to supress all warnings:
+// #define IDOC_NO_WARNINGS
+// This does not disable out of memory or other errors!!
+
+
+#ifdef IDOC_IMPLEMENTATION
+
+#ifndef IDOC_NO_WARNINGS
+#define IDOC_WARN(...) fprintf(stderr, __VA_ARGS__)
+#else
+#define IDOC_WARN(...)
+#endif // IDOC_NO_WARNINGS
 
 #define COMMENT_CHAR '#'
 
@@ -182,23 +304,13 @@ typedef struct {
     Idoc_Token current;
 } Idoc_Parser;
 
-typedef struct {
+struct Idoc {
     Idoc_Node root;
     Idoc_SB __file_content;
-} Idoc;
+    bool is_valid;
+};
 
-Idoc         idoc_init(const char *file_name);
-int          idoc_get_int(Idoc *idoc, int def_int, ...);
-double       idoc_get_double(Idoc *idoc, double def_double, ...);
-char        *idoc_get_cstr(Idoc *idoc, const char *def_str, ...);
-bool         idoc_get_tuple_int(Idoc *idoc, int *out, size_t capacity, ...);
-bool         idoc_get_tuple_double(Idoc *idoc, double *out, size_t capacity, ...);
-bool         idoc_get_tuple_cstr(Idoc *idoc, const char **out, size_t capacity, ...);
-
-#ifdef IDOC_IMPLEMENTATION
-
-bool idoc_read_entire_file(const char *path, Idoc_SB *sb)
-{
+bool idoc_read_entire_file(const char *path, Idoc_SB *sb) {
     FILE *f = fopen(path, "rb");
     if (!f) {
         fprintf(stderr, "Could not open %s: %s\n",
@@ -739,15 +851,22 @@ void value_print(Idoc_Value *value) {
 
 
 Idoc idoc_init(const char *file_name) {
+    Idoc ret = {0};
     Idoc_SB sb = {0};
-    idoc_read_entire_file(file_name, &sb);
+    if (!idoc_read_entire_file(file_name, &sb)) {
+        ret.is_valid = false;
+        return ret
+    }
     Idoc_SV sv = {
         .data = sb.items,
         .count = sb.count
     };
     Idoc_Parser p = parser_init(sv, file_name);
     Idoc_Node n = parse_block(&p, 0);
-    return (Idoc){.root = n, .__file_content = sb};
+    ret.root = n;
+    ret.__file_content = sb;
+    ret.is_valid = true;
+    return ret;
 }
 
 Idoc_Value *idoc_resolve_value(Idoc *idoc, Idoc_Value *value) {
@@ -779,7 +898,7 @@ int idoc_get_int(Idoc *idoc, int def_int, ...) {
         nr = node_find_child(current, cstr_to_sv(part));
         if (!nr.is_valid) {
             va_end(args);
-            fprintf(stderr, "Warning: Could not find attribute \"%s\", using default (%d)\n", part, def_int);
+            IDOC_WARN("Warning: Could not find attribute \"%s\", using default (%d)\n", part, def_int);
             return def_int;
         }
         current = nr.node;
@@ -787,10 +906,10 @@ int idoc_get_int(Idoc *idoc, int def_int, ...) {
     va_end(args);
     Idoc_Value *value = idoc_resolve_value(idoc, &current->value);
     if (value == NULL) {
-        fprintf(stderr, "Warning: Invalid reference, using default\n"); // TODO: add line num logic to this
+        IDOC_WARN("Warning: Invalid reference, using default\n"); // TODO: add line num logic to this
         return def_int;
     } else if (value->type != VALUE_INTEGER) {
-        fprintf(stderr, "Warning: Invalid type, using default\n"); // TODO: add line num logic to this
+        IDOC_WARN("Warning: Invalid type, using default (%d)\n", def_int); // TODO: add line num logic to this
         return def_int;
     }
     return value->integer;
@@ -810,7 +929,7 @@ double idoc_get_double(Idoc *idoc, double def_double, ...) {
         }
         nr = node_find_child(current, cstr_to_sv(part));
         if (!nr.is_valid) {
-            fprintf(stderr, "Warning: Could not find attribute \"%s\", using default (%f)\n", part, def_double);
+            IDOC_WARN("Warning: Could not find attribute \"%s\", using default (%f)\n", part, def_double);
             va_end(args);
             return def_double;
         }
@@ -819,10 +938,10 @@ double idoc_get_double(Idoc *idoc, double def_double, ...) {
     va_end(args);
     Idoc_Value *value = idoc_resolve_value(idoc, &current->value);
     if (value == NULL) {
-        fprintf(stderr, "Warning: Invalid reference, using default\n"); // TODO: add line num logic to this
+        IDOC_WARN("Warning: Invalid reference, using default\n"); // TODO: add line num logic to this
         return def_double;
     } else if (value->type != VALUE_FLOAT) {
-        fprintf(stderr, "Warning: Invalid type, using default\n"); // TODO: add line num logic to this
+        IDOC_WARN("Warning: Invalid type, using default (%f)\n", def_double); // TODO: add line num logic to this
         return def_double;
     }
     return value->floating;
@@ -843,7 +962,7 @@ char *idoc_get_cstr(Idoc *idoc, const char *def_str, ...) {
         }
         nr = node_find_child(current, cstr_to_sv(part));
         if (!nr.is_valid) {
-            fprintf(stderr, "Warning: Could not find attribute \"%s\", using default (%s)\n", part, cp_def_str);
+            IDOC_WARN("Warning: Could not find attribute \"%s\", using default (%s)\n", part, cp_def_str);
             va_end(args);
             return cp_def_str;
         }
@@ -852,10 +971,10 @@ char *idoc_get_cstr(Idoc *idoc, const char *def_str, ...) {
     va_end(args);
     Idoc_Value *value = idoc_resolve_value(idoc, &current->value);
     if (value == NULL) {
-        fprintf(stderr, "Warning: Invalid reference, using default (%s)\n", cp_def_str); // TODO: add line num logic to this
+        IDOC_WARN("Warning: Invalid reference, using default (%s)\n", cp_def_str); // TODO: add line num logic to this
         return cp_def_str;
     } else if (value->type != VALUE_STRING) {
-        fprintf(stderr, "Warning: Invalid type, using default (%s)\n", cp_def_str); // TODO: add line num logic to this
+        IDOC_WARN("Warning: Invalid type, using default (%s)\n", cp_def_str); // TODO: add line num logic to this
         return cp_def_str;
     }
     free(cp_def_str);
@@ -876,7 +995,7 @@ bool idoc_get_tuple_int(Idoc *idoc, int *out, size_t capacity, ...) {
         }
         nr = node_find_child(current, cstr_to_sv(part));
         if (!nr.is_valid) {
-            fprintf(stderr, "Warning: Could not find attribute \"%s\"\n", part);
+            IDOC_WARN("Warning: Could not find attribute \"%s\"\n", part);
             va_end(args);
             return false;
         }
@@ -885,10 +1004,10 @@ bool idoc_get_tuple_int(Idoc *idoc, int *out, size_t capacity, ...) {
     va_end(args);
     Idoc_Value *value = idoc_resolve_value(idoc, &current->value);
     if (value == NULL) {
-        fprintf(stderr, "Warning: Invalid reference, using default\n"); // TODO: add line num logic to this
+        IDOC_WARN("Warning: Invalid reference\n"); // TODO: add line num logic to this
         return false;
     } else if (value->type != VALUE_TUPLE) {
-        fprintf(stderr, "Warning: Invalid type, using default\n"); // TODO: add line num logic to this
+        IDOC_WARN("Warning: Invalid type\n"); // TODO: add line num logic to this
         return false;
     }
 
@@ -917,7 +1036,7 @@ bool idoc_get_tuple_double(Idoc *idoc, double *out, size_t capacity, ...) {
         }
         nr = node_find_child(current, cstr_to_sv(part));
         if (!nr.is_valid) {
-            fprintf(stderr, "Warning: Could not find attribute \"%s\"\n", part);
+            IDOC_WARN("Warning: Could not find attribute \"%s\"\n", part);
             va_end(args);
             return false;
         }
@@ -926,10 +1045,10 @@ bool idoc_get_tuple_double(Idoc *idoc, double *out, size_t capacity, ...) {
     va_end(args);
     Idoc_Value *value = idoc_resolve_value(idoc, &current->value);
     if (value == NULL) {
-        fprintf(stderr, "Warning: Invalid reference, using default\n"); // TODO: add line num logic to this
+        IDOC_WARN("Warning: Invalid reference\n"); // TODO: add line num logic to this
         return false;
     } else if (value->type != VALUE_TUPLE) {
-        fprintf(stderr, "Warning: Invalid type, using default\n"); // TODO: add line num logic to this
+        IDOC_WARN("Warning: Invalid type\n"); // TODO: add line num logic to this
         return false;
     }
 
@@ -944,7 +1063,7 @@ bool idoc_get_tuple_double(Idoc *idoc, double *out, size_t capacity, ...) {
     return true;
 }
 
-bool idoc_get_tuple_cstr(Idoc *idoc, const char **out, size_t capacity, ...) {
+bool idoc_get_tuple_cstr(Idoc *idoc, char **out, size_t capacity, ...) {
     va_list args;
     va_start(args, capacity);
 
@@ -958,7 +1077,7 @@ bool idoc_get_tuple_cstr(Idoc *idoc, const char **out, size_t capacity, ...) {
         }
         nr = node_find_child(current, cstr_to_sv(part));
         if (!nr.is_valid) {
-            fprintf(stderr, "Warning: Could not find attribute \"%s\"\n", part);
+            IDOC_WARN("Warning: Could not find attribute \"%s\"\n", part);
             va_end(args);
             return false;
         }
@@ -967,10 +1086,10 @@ bool idoc_get_tuple_cstr(Idoc *idoc, const char **out, size_t capacity, ...) {
     va_end(args);
     Idoc_Value *value = idoc_resolve_value(idoc, &current->value);
     if (value == NULL) {
-        fprintf(stderr, "Warning: Invalid reference, using default\n"); // TODO: add line num logic to this
+        IDOC_WARN("Warning: Invalid reference\n"); // TODO: add line num logic to this
         return false;
     } else if (value->type != VALUE_TUPLE) {
-        fprintf(stderr, "Warning: Invalid type, using default\n"); // TODO: add line num logic to this
+        IDOC_WARN("Warning: Invalid type\n"); // TODO: add line num logic to this
         return false;
     }
 
@@ -1013,9 +1132,6 @@ void idoc_free(Idoc *idoc) {
     free(idoc->__file_content.items);
 }
 
-#define ARRAY_LEN(arr) (sizeof(arr) / sizeof((arr)[0]))
-// types: int, double, cstr
-#define idoc_get(idoc, type, def, ...) idoc_get_##type(idoc, def, __VA_ARGS__, NULL)
-#define idoc_get_tuple(idoc, type, out, ...) idoc_get_tuple_##type(idoc, out, ARRAY_LEN(out), __VA_ARGS__, NULL)
 
 #endif // IDOC_IMPLEMENTATION
+#endif // IDOC_H
