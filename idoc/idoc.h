@@ -2,9 +2,10 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <string.h>
+#include <errno.h>
+#include <ctype.h>
 
-// #define NOB_IMPLEMENTATION
-// #include "../include/nob.h"
 
 #define COMMENT_CHAR '#'
 
@@ -13,7 +14,7 @@ typedef enum {
     WS_NO_INDENT,
     WS_TAB = '\t',
     WS_SPACE = ' ',
-} whitespace_type;
+} Idoc_whitespace_type;
 
 typedef enum {
     TOKEN_EOF = 0,
@@ -31,9 +32,9 @@ typedef enum {
     TOKEN_UNINDENT,
     TOKEN_NL,
     TOKEN_UNDEFINED,
-} Token_Type;
+} Idoc_Token_Type;
 
-const char *token_by_name(Token_Type type) {
+const char *token_by_name(Idoc_Token_Type type) {
     switch (type) {
     case TOKEN_EOF:
         return "TOKEN_EOF";
@@ -81,29 +82,51 @@ typedef struct {
     const char *data;
 } Idoc_SV;
 
-typedef struct {
-    Token_Type type;
-    Idoc_SV sv;
-} Token;
+#define SV_FMT "%.*s"
+#define SV_ARG(sv) (int)(sv).count, (sv).data
+
+#define da_append(da, value)                                                   \
+    do {                                                                       \
+        if ((da)->count >= (da)->capacity) {                                   \
+            size_t new_capacity = (da)->capacity ? (da)->capacity * 2 : 8;     \
+            void *new_items =                                                  \
+                realloc((da)->items, new_capacity * sizeof(*(da)->items));     \
+            if (!new_items) {                                                  \
+                fprintf(stderr, "No memory!!!\n");                             \
+                exit(1);                                                       \
+            }                                                                  \
+            (da)->items = new_items;                                           \
+            (da)->capacity = new_capacity;                                     \
+        }                                                                      \
+        (da)->items[(da)->count++] = (value);                                  \
+    } while (0)
+
+
+
 
 typedef struct {
-    whitespace_type type;
+    Idoc_Token_Type type;
+    Idoc_SV sv;
+} Idoc_Token;
+
+typedef struct {
+    Idoc_whitespace_type type;
     size_t count;
-} Indent;
+} Idoc_Indent;
 
 typedef struct {
     int line;
     int col;
-} Loc;
+} Idoc_Loc;
 
 typedef struct {
-    Loc loc;
+    Idoc_Loc loc;
     Idoc_SV sv;
     const char *file;
     bool at_start;
-    Indent exp_ind;
+    Idoc_Indent exp_ind;
 
-    Indent last_ind;
+    Idoc_Indent last_ind;
 } Lexer;
 
 
@@ -114,19 +137,19 @@ typedef enum {
     VALUE_FLOAT,
     VALUE_TUPLE,
     VALUE_REFERENCE,
-} Value_Type;
+} Idoc_Value_Type;
 
 typedef enum {
     NODE_BLOCK,
     NODE_STRING,
     NODE_INTEGER,
     NODE_REFERENCE,
-} Node_Type;
+} Idoc_Node_Type;
 
-typedef struct Value Value;
+typedef struct Idoc_Value Idoc_Value;
 
-struct Value {
-    Value_Type type;
+struct Idoc_Value {
+    Idoc_Value_Type type;
     union {
         Idoc_SV string;
         int integer;
@@ -137,68 +160,160 @@ struct Value {
             size_t capacity;
         } ref;
         struct {
-            Value *items;
+            Idoc_Value *items;
             size_t count;
             size_t capacity;
         } tuple;
     };
 };
 
-typedef struct Node {
+typedef struct Idoc_Node {
     Idoc_SV key;
-    Value value;
-    Loc loc;
+    Idoc_Value value;
+    Idoc_Loc loc;
 
-    struct Node *items; // children
+    struct Idoc_Node *items; // children
     size_t count;
     size_t capacity;
-} Node;
+} Idoc_Node;
 
 typedef struct {
     Lexer lexer;
-    Token current;
-} Parser;
+    Idoc_Token current;
+} Idoc_Parser;
 
 typedef struct {
-    Node root;
+    Idoc_Node root;
+    Idoc_SB __file_content;
 } Idoc;
 
+Idoc         idoc_init(const char *file_name);
+int          idoc_get_int(Idoc *idoc, int def_int, ...);
+double       idoc_get_double(Idoc *idoc, double def_double, ...);
+char        *idoc_get_cstr(Idoc *idoc, const char *def_str, ...);
+bool         idoc_get_tuple_int(Idoc *idoc, int *out, size_t capacity, ...);
+bool         idoc_get_tuple_double(Idoc *idoc, double *out, size_t capacity, ...);
+bool         idoc_get_tuple_cstr(Idoc *idoc, const char **out, size_t capacity, ...);
 
-bool Idoc_read_entire_file(const char *path, Idoc_SB *sb)
-    {
-    bool result = true;
+#ifdef IDOC_IMPLEMENTATION
 
+bool idoc_read_entire_file(const char *path, Idoc_SB *sb)
+{
     FILE *f = fopen(path, "rb");
-    size_t new_count = 0;
-    long long m = 0;
-    if (f == NULL)                 nob_return_defer(false);
-    if (fseek(f, 0, SEEK_END) < 0) nob_return_defer(false);
-#ifndef _WIN32
-    m = ftell(f);
-#else
-    m = _telli64(_fileno(f));
-#endif
-    if (m < 0)                     nob_return_defer(false);
-    if (fseek(f, 0, SEEK_SET) < 0) nob_return_defer(false);
+    if (!f) {
+        fprintf(stderr, "Could not open %s: %s\n",
+                path, strerror(errno));
+        return false;
+    }
 
-    new_count = sb->count + m;
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return false;
+    }
+
+    long size = ftell(f);
+    if (size < 0) {
+        fclose(f);
+        return false;
+    }
+
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return false;
+    }
+
+    size_t new_count = sb->count + (size_t)size;
+
     if (new_count > sb->capacity) {
-        sb->items = NOB_DECLTYPE_CAST(sb->items)NOB_REALLOC(sb->items, new_count);
-        NOB_ASSERT(sb->items != NULL && "Buy more RAM lool!!");
-        sb->capacity = new_count;
+        size_t capacity = sb->capacity ? sb->capacity : 1024;
+
+        while (capacity < new_count) {
+            capacity *= 2;
+        }
+
+        char *new_items = realloc(sb->items, capacity);
+
+        if (!new_items) {
+            fprintf(stderr, "Out of memory reading %s\n", path);
+            fclose(f);
+            return false;
+        }
+
+        sb->items = new_items;
+        sb->capacity = capacity;
     }
 
-    fread(sb->items + sb->count, m, 1, f);
-    if (ferror(f)) {
-        // TODO: Afaik, ferror does not set errno. So the error reporting in defer is not correct in this case.
-        nob_return_defer(false);
+    size_t read = fread(
+        sb->items + sb->count,
+        1,
+        (size_t)size,
+        f
+    );
+
+    if (read != (size_t)size) {
+        fprintf(stderr, "Could not read %s\n", path);
+        fclose(f);
+        return false;
     }
+
     sb->count = new_count;
 
-defer:
-    if (!result) nob_log(NOB_ERROR, "Could not read file %s: %s", path, strerror(errno));
-    if (f) fclose(f);
-    return result;
+    fclose(f);
+    return true;
+}
+
+Idoc_SV cstr_to_sv(const char *str) {
+    return (Idoc_SV){
+        .data = str,
+        .count = strlen(str)
+    };
+}
+
+char *cstr_copy(const char *str) {
+    size_t len = strlen(str);
+
+    char *copy = malloc(len + 1);
+    if (!copy) {
+        fprintf(stderr, "No memory!!!\n");
+        exit(1);
+    }
+
+    memcpy(copy, str, len + 1);
+
+    return copy;
+}
+
+// The user owns the memory so you can freely use the string after idoc_free.
+// Make sure to free it with free(str)!
+char *sv_to_cstr(Idoc_SV sv) {
+    char *string = malloc(sv.count + 1);
+    if (string == NULL) {
+        fprintf(stderr, "No memory!!!\n");
+        exit(1);
+    }
+    memcpy(string, sv.data, sv.count);
+    string[sv.count] = '\0';
+    return string;
+}
+
+bool sv_eq(Idoc_SV sv1, Idoc_SV sv2) {
+    if (sv1.count != sv2.count) return false;
+    for (size_t i = 0; i < sv1.count; i++) {
+        unsigned char c1 = (unsigned char)sv1.data[i];
+        unsigned char c2 = (unsigned char)sv2.data[i];
+        if (tolower(c1) != tolower(c2)) return false;
+    }
+    return true;
+}
+
+Idoc_SV sv_chop_left(Idoc_SV *sv, int count) {
+    Idoc_SV chopped = {
+        .data = sv->data,
+        .count = count
+    };
+    sv->data  += count;
+    sv->count -= count;
+    return chopped;
 }
 
 Idoc_SV sv_unquote(Idoc_SV sv) {
@@ -245,10 +360,9 @@ double sv_to_double(Idoc_SV sv) {
     return result * sign;
 }
 
-void error(char *file_name, int line, int col, const char *fmt, ...) {
+void error(const char *file_name, int line, int col, const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
-    //nob_log(NOB_ERROR, "%s:%d:%d: test ", file_name, line, col);
     fprintf(stderr, "%s:%d:%d: ", file_name, line, col);
     vfprintf(stderr, fmt, args);
     fprintf(stderr, "\n");
@@ -256,19 +370,23 @@ void error(char *file_name, int line, int col, const char *fmt, ...) {
     exit(1);
 }
 
-Lexer lexer_init(const char *file_name) {
-    Idoc_SB sb = {0};
-    read_entire_file(file_name, &sb);
-    Idoc_SV sv = sb_to_sv(sb);
+Lexer lexer_init(Idoc_SV file, const char* file_name) {
     return (Lexer){.loc.line = 1,
                    .loc.col = 1,
-                   .sv = sv,
+                   .sv = file,
                    .file = file_name,
-                   .exp_ind = (Indent){WS_UNSET, 0},
+                   .exp_ind = (Idoc_Indent){WS_UNSET, 0},
                    .at_start = true};
 }
 
-bool lexer_check_whitespace(Lexer *l, whitespace_type ws, size_t length) {
+char lexer_peek(Lexer *l) {
+    if (l->sv.count == 0) {
+        return '\0';
+    }
+    return l->sv.data[0];
+}
+
+bool lexer_check_whitespace(Lexer *l, Idoc_whitespace_type ws, size_t length) {
     if (!l->at_start) {
         return false;
     }
@@ -279,32 +397,32 @@ bool lexer_check_whitespace(Lexer *l, whitespace_type ws, size_t length) {
         } else
             return true;
     } else {
-        l->exp_ind = (Indent){.type = ws, .count = length};
+        l->exp_ind = (Idoc_Indent){.type = ws, .count = length};
         return true;
     }
 }
 
-Token lexer_next_token(Lexer *l) {
+Idoc_Token lexer_next_token(Lexer *l) {
     if (l->sv.count == 0) {
-        return (Token){.type = TOKEN_EOF, .sv = sv_from_cstr("EOF")};
+        return (Idoc_Token){.type = TOKEN_EOF, .sv = cstr_to_sv("EOF")};
     }
     size_t length = 0;
-    char c = l->sv.data[0];
-    whitespace_type ws;
+    char c = lexer_peek(l);
+    Idoc_whitespace_type ws;
     while (true) { // Whitespace handling
         if (c == ' ') {
             ws = WS_SPACE;
             sv_chop_left(&l->sv, 1);
             length++;
-            c = l->sv.data[0];
+            c = lexer_peek(l);
         } else if (c == '\t') {
             ws = WS_TAB;
             sv_chop_left(&l->sv, 1);
             length++;
-            c = l->sv.data[0];
+            c = lexer_peek(l);
         } else if (c == '\r') { // windows carriage return..
             sv_chop_left(&l->sv, 1);
-            c = l->sv.data[0];
+            c = lexer_peek(l);
         } else
             break;
     }
@@ -313,23 +431,23 @@ Token lexer_next_token(Lexer *l) {
         l->loc.col += length;
         if (lexer_check_whitespace(l, ws, length)) {
             if (l->last_ind.count < length) {
-                l->last_ind = (Indent){.type = ws, .count = length};
-                return (Token){.type = TOKEN_INDENT, .sv = sv_from_cstr("->")};
+                l->last_ind = (Idoc_Indent){.type = ws, .count = length};
+                return (Idoc_Token){.type = TOKEN_INDENT, .sv = cstr_to_sv("->")};
             } else if (l->last_ind.count > length) {
-                l->last_ind = (Indent){.type = ws, .count = length};
-                return (Token){.type = TOKEN_UNINDENT,
-                               .sv = sv_from_cstr("<-")};
+                l->last_ind = (Idoc_Indent){.type = ws, .count = length};
+                return (Idoc_Token){.type = TOKEN_UNINDENT,
+                               .sv = cstr_to_sv("<-")};
             }
         }
     }
     length = 0;
     const char *start = l->sv.data;
     if (isdigit(c)) {
-        Token_Type tt = TOKEN_INT;
+        Idoc_Token_Type tt = TOKEN_INT;
         while (true) {
             sv_chop_left(&l->sv, 1);
             length++;
-            c = l->sv.data[0];
+            c = lexer_peek(l);
             if (c == '.')
                 tt = TOKEN_FLOAT;
             else if (!isdigit(c))
@@ -337,13 +455,13 @@ Token lexer_next_token(Lexer *l) {
         }
         l->loc.col += length;
         Idoc_SV number = {.data = start, .count = length};
-        return (Token){.type = tt, .sv = number};
+        return (Idoc_Token){.type = tt, .sv = number};
     } else if (c == '-' && isdigit(l->sv.data[1])) { // The next must be a number
-        Token_Type tt = TOKEN_INT;
+        Idoc_Token_Type tt = TOKEN_INT;
         while (true) {
             sv_chop_left(&l->sv, 1);
             length++;
-            c = l->sv.data[0];
+            c = lexer_peek(l);
             if (c == '.')
                 tt = TOKEN_FLOAT;
             else if (!isdigit(c))
@@ -351,13 +469,13 @@ Token lexer_next_token(Lexer *l) {
         }
         l->loc.col += length;
         Idoc_SV number = {.data = start, .count = length};
-        return (Token){.type = tt, .sv = number};
+        return (Idoc_Token){.type = tt, .sv = number};
     }
     if (isalpha(c)) {
         while (true) {
             sv_chop_left(&l->sv, 1);
             length++;
-            c = l->sv.data[0];
+            c = lexer_peek(l);
             if (!isalpha(c) && !isdigit(c))
                 break;
         }
@@ -366,7 +484,7 @@ Token lexer_next_token(Lexer *l) {
             .count = length,
         };
         l->loc.col += length;
-        return (Token){.type = TOKEN_VAR, .sv = variable};
+        return (Idoc_Token){.type = TOKEN_VAR, .sv = variable};
     } else if (c == '=') {
         length += 1;
         sv_chop_left(&l->sv, 1);
@@ -375,34 +493,34 @@ Token lexer_next_token(Lexer *l) {
             .count = length,
         };
         l->loc.col += length;
-        return (Token){.type = TOKEN_EQUAL, .sv = eq};
+        return (Idoc_Token){.type = TOKEN_EQUAL, .sv = eq};
 
     } else if (c == '\n') {
         sv_chop_left(&l->sv, 1);
         l->at_start = true;
         l->loc.line += 1;
         l->loc.col = 1;
-        return (Token){.type = TOKEN_NL, .sv = sv_from_cstr("\\n")};
+        return (Idoc_Token){.type = TOKEN_NL, .sv = cstr_to_sv("\\n")};
     } else if (c == ':') {
         sv_chop_left(&l->sv, 1);
         l->loc.col += 1;
-        return (Token){.type = TOKEN_COLON, .sv = sv_from_cstr(":")};
+        return (Idoc_Token){.type = TOKEN_COLON, .sv = cstr_to_sv(":")};
     } else if (c == ',') {
         sv_chop_left(&l->sv, 1);
         l->loc.col += 1;
-        return (Token){.type = TOKEN_COMMA, .sv = sv_from_cstr(",")};
+        return (Idoc_Token){.type = TOKEN_COMMA, .sv = cstr_to_sv(",")};
     } else if (c == '(') {
         sv_chop_left(&l->sv, 1);
         l->loc.col += 1;
-        return (Token){.type = TOKEN_OPAREN, .sv = sv_from_cstr("(")};
+        return (Idoc_Token){.type = TOKEN_OPAREN, .sv = cstr_to_sv("(")};
     } else if (c == ')') {
         sv_chop_left(&l->sv, 1);
         l->loc.col += 1;
-        return (Token){.type = TOKEN_CPAREN, .sv = sv_from_cstr(")")};
+        return (Idoc_Token){.type = TOKEN_CPAREN, .sv = cstr_to_sv(")")};
     } else if (c == '"') {
         sv_chop_left(&l->sv, 1);
         length++;
-        c = l->sv.data[0];
+        c = lexer_peek(l);
         while (c != '"') { // TODO: BUG: I think this lets you have a newline inside the string
             if (c == '\n') {error(l->file, l->loc.line, length, "Unescaped new lines are not supported");}
             sv_chop_left(&l->sv, 1);
@@ -410,7 +528,7 @@ Token lexer_next_token(Lexer *l) {
                 error(l->file, l->loc.line, length, "Unbalanced '\"'.");
             }
             length++;
-            c = l->sv.data[0];
+            c = lexer_peek(l);
         }
         sv_chop_left(&l->sv, 1);
         length++;
@@ -419,41 +537,41 @@ Token lexer_next_token(Lexer *l) {
             .count = length,
         };
         l->loc.col += length;
-        return (Token){.type = TOKEN_STR, .sv = str};
+        return (Idoc_Token){.type = TOKEN_STR, .sv = str};
 
     } else if (c == COMMENT_CHAR) {
         while (true) {
             if (l->sv.count == 0) {
-                return (Token){.type = TOKEN_EOF, .sv = sv_from_cstr("EOF")};
+                return (Idoc_Token){.type = TOKEN_EOF, .sv = cstr_to_sv("EOF")};
             }
             sv_chop_left(&l->sv, 1);
-            c = l->sv.data[0];
+            c = lexer_peek(l);
             if (c == '\n') {
                 sv_chop_left(&l->sv, 1);
                 l->at_start = true;
                 l->loc.col = 1;
                 l->loc.line += 1;
-                return (Token){.type = TOKEN_NL, .sv = sv_from_cstr("\\n")};
+                return (Idoc_Token){.type = TOKEN_NL, .sv = cstr_to_sv("\\n")};
             }
         }
     } else if (c == '.') {
         sv_chop_left(&l->sv, 1);
         l->loc.col += 1;
-        return (Token){.type = TOKEN_DOT, .sv = sv_from_cstr(".")};
+        return (Idoc_Token){.type = TOKEN_DOT, .sv = cstr_to_sv(".")};
     } else {
-        Idoc_SV sv = {.data = &l->sv.data[0], .count = 1};
+        Idoc_SV sv = {.data = l->sv.data, .count = 1};
         sv_chop_left(&l->sv, 1);
         l->loc.col += 1;
-        return (Token){.type = TOKEN_UNDEFINED, .sv = sv};
+        return (Idoc_Token){.type = TOKEN_UNDEFINED, .sv = sv};
     }
 }
 
-void print_token(Token t) {
-    printf(SV_Fmt " => %s\n", SV_Arg(t.sv), token_by_name(t.type));
+void print_token(Idoc_Token t) {
+    printf(SV_FMT " => %s\n", SV_ARG(t.sv), token_by_name(t.type));
 }
 
 void dump_tokens(Lexer *l) {
-    Token t;
+    Idoc_Token t;
     do {
         t = lexer_next_token(l);
         print_token(t);
@@ -461,33 +579,33 @@ void dump_tokens(Lexer *l) {
 }
 
 
-Parser parser_init(const char *file_name) {
-    Parser parser = {
-        .lexer = lexer_init(file_name),
+Idoc_Parser parser_init(Idoc_SV file, const char* file_name) {
+    Idoc_Parser parser = {
+        .lexer = lexer_init(file, file_name),
     };
     parser.current = lexer_next_token(&parser.lexer);
     return parser;
 }
 
-Token parser_peek(Parser *p) { return p->current; }
+Idoc_Token parser_peek(Idoc_Parser *p) { return p->current; }
 
-Token parser_consume(Parser *p) {
-    Token t = p->current;
+Idoc_Token parser_consume(Idoc_Parser *p) {
+    Idoc_Token t = p->current;
     p->current = lexer_next_token(&p->lexer);
     return t;
 }
 
-Token parser_expect(Parser *p, Token_Type exp_tok) {
-    Token token = parser_consume(p);
+Idoc_Token parser_expect(Idoc_Parser *p, Idoc_Token_Type exp_tok) {
+    Idoc_Token token = parser_consume(p);
     if (token.type != exp_tok) {
         error(p->lexer.file, p->lexer.loc.line, p->lexer.loc.col,
-              "Error while parsing: expected: %s  got: %s  ("SV_Fmt")",
-              token_by_name(exp_tok), token_by_name(token.type), SV_Arg(token.sv));
+              "Error while parsing: expected: %s  got: %s  ("SV_FMT")",
+              token_by_name(exp_tok), token_by_name(token.type), SV_ARG(token.sv));
     }
     return token;
 }
 
-Value parse_value(Parser *p, Node node, Token token) {
+Idoc_Value parse_value(Idoc_Parser *p, Idoc_Node node, Idoc_Token token) {
     node.loc = p->lexer.loc;
     switch (token.type) {
     case TOKEN_STR: {
@@ -506,7 +624,7 @@ Value parse_value(Parser *p, Node node, Token token) {
         parser_expect(p, TOKEN_DOT);
         da_append(&node.value.ref, token.sv);
         while (true) {
-            Token v = parser_expect(p, TOKEN_VAR);
+            Idoc_Token v = parser_expect(p, TOKEN_VAR);
             da_append(&node.value.ref, v.sv);
             if (parser_consume(p).type != TOKEN_DOT) break;
         node.value.type = VALUE_REFERENCE;
@@ -515,7 +633,7 @@ Value parse_value(Parser *p, Node node, Token token) {
     case TOKEN_DOT: { // LOCAL REFERENCE
         da_append(&node.value.ref, token.sv);
         while (true) {
-            Token v = parser_expect(p, TOKEN_VAR);
+            Idoc_Token v = parser_expect(p, TOKEN_VAR);
             da_append(&node.value.ref, v.sv);
             if (parser_consume(p).type != TOKEN_DOT) break;
         }
@@ -531,17 +649,18 @@ Value parse_value(Parser *p, Node node, Token token) {
         node.value.type = VALUE_TUPLE;
     } break;
     default: {
-        l_error(p->lexer, "Unknown token: %s ("SV_Fmt")", token_by_name(token.type), SV_Arg(token.sv));
+        error(p->lexer.file, p->lexer.loc.line, p->lexer.loc.col,
+              "Unknown token: %s ("SV_FMT")", token_by_name(token.type), SV_ARG(token.sv));
     } break;
     }
     return node.value;
 }
 
-Node parse_block(Parser *p, int indent_level) {
-    Token t;
-    Node n = {0};
+Idoc_Node parse_block(Idoc_Parser *p, int indent_level) {
+    Idoc_Token t;
+    Idoc_Node n = {0};
     if (indent_level == 0) {
-        n.key = sv_from_cstr("ROOT");
+        n.key = cstr_to_sv("ROOT");
     }
     while (p->current.type != TOKEN_EOF && p->current.type != TOKEN_UNINDENT) {
         // print_token(p->current);
@@ -550,44 +669,46 @@ Node parse_block(Parser *p, int indent_level) {
             continue;
         }
         t = parser_expect(p, TOKEN_VAR);
-        Token next = parser_peek(p);
+        Idoc_Token next = parser_peek(p);
         if (next.type == TOKEN_COLON) {
             parser_consume(p); // colon
             parser_expect(p, TOKEN_NL);
             parser_expect(p, TOKEN_INDENT);
-            Node sub_n = parse_block(p, indent_level + 1);
+            Idoc_Node sub_n = parse_block(p, indent_level + 1);
             sub_n.key = t.sv;
             da_append(&n, sub_n);
             if (parser_peek(p).type == TOKEN_EOF) {break;}
             parser_expect(p, TOKEN_UNINDENT); // SOmething is wrong here
         } else if (next.type == TOKEN_EQUAL) {
             parser_consume(p); // equal
-            Token var = parser_consume(p); // whatever the assignment is
-            Node sub_n = {.key = t.sv};
+            Idoc_Token var = parser_consume(p); // whatever the assignment is
+            Idoc_Node sub_n = {.key = t.sv};
             sub_n.value = parse_value(p, sub_n, var);
             da_append(&n, sub_n);
         } else {
-            l_error(p->lexer, "main Unknown token: %s ("SV_Fmt")", token_by_name(t.type), SV_Arg(t.sv));
+            error(p->lexer.file, p->lexer.loc.line, p->lexer.loc.col, "Unknown token: %s ("SV_FMT")", token_by_name(t.type), SV_ARG(t.sv));
         }
     }
     return n;
 }
 
 typedef struct {
-    Node *node;
+    Idoc_Node *node;
     bool is_valid;
-} Node_Ret;
+} Idoc_Node_Ret;
 
-Node_Ret node_find_child(Node *parent, Idoc_SV key) {
-    da_foreach(Node, it, parent) {
-        if (sv_eq(it->key, key)) {
-            return (Node_Ret){.node = it, .is_valid = true};
+Idoc_Node_Ret node_find_child(Idoc_Node *parent, Idoc_SV key) {
+    // da_foreach(Idoc_Node, it, parent) {
+    for (size_t i = 0; i < parent->count; i++) {
+        if (sv_eq(parent->items[i].key, key)) {
+            return (Idoc_Node_Ret){.node = &parent->items[i], .is_valid = true};
         }
     }
-    return (Node_Ret){.is_valid = false};
+    return (Idoc_Node_Ret){.is_valid = false};
 }
 
-void value_print(Value *value) {
+
+void value_print(Idoc_Value *value) {
     switch (value->type) {
     case VALUE_INTEGER: {
         printf("%d", value->integer);
@@ -596,7 +717,7 @@ void value_print(Value *value) {
         printf("%.2f", value->floating);
     } break;
     case VALUE_STRING: {
-        printf(SV_Fmt, SV_Arg(value->string));
+        printf(SV_FMT, SV_ARG(value->string));
     } break;
     case VALUE_REFERENCE: {
         printf("Printing references is not implemented yet");
@@ -616,16 +737,23 @@ void value_print(Value *value) {
     }
 }
 
+
 Idoc idoc_init(const char *file_name) {
-    Parser p = parser_init(file_name);
-    Node n = parse_block(&p, 0);
-    return (Idoc){.root = n};
+    Idoc_SB sb = {0};
+    idoc_read_entire_file(file_name, &sb);
+    Idoc_SV sv = {
+        .data = sb.items,
+        .count = sb.count
+    };
+    Idoc_Parser p = parser_init(sv, file_name);
+    Idoc_Node n = parse_block(&p, 0);
+    return (Idoc){.root = n, .__file_content = sb};
 }
 
-Value *idoc_resolve_value(Idoc *idoc, Value *value) {
-    Node_Ret nr;
+Idoc_Value *idoc_resolve_value(Idoc *idoc, Idoc_Value *value) {
+    Idoc_Node_Ret nr;
     while (value->type == VALUE_REFERENCE) {
-        Node *current = &idoc->root;
+        Idoc_Node *current = &idoc->root;
         for (size_t i = 0; i < value->ref.count; i++) {
             nr = node_find_child(current, value->ref.items[i]);
             if (!nr.is_valid) {return NULL;}
@@ -640,15 +768,15 @@ int idoc_get_int(Idoc *idoc, int def_int, ...) {
     va_list args;
     va_start(args, def_int);
 
-    Node *current = &idoc->root;
-    Node_Ret nr;
+    Idoc_Node *current = &idoc->root;
+    Idoc_Node_Ret nr;
     const char *part;
     while (true) {
         part = va_arg(args, const char *);
         if (part == NULL) {
             break; // reached the end
         }
-        nr = node_find_child(current, sv_from_cstr(part));
+        nr = node_find_child(current, cstr_to_sv(part));
         if (!nr.is_valid) {
             va_end(args);
             fprintf(stderr, "Warning: Could not find attribute \"%s\", using default (%d)\n", part, def_int);
@@ -657,7 +785,7 @@ int idoc_get_int(Idoc *idoc, int def_int, ...) {
         current = nr.node;
     }
     va_end(args);
-    Value *value = idoc_resolve_value(idoc, &current->value);
+    Idoc_Value *value = idoc_resolve_value(idoc, &current->value);
     if (value == NULL) {
         fprintf(stderr, "Warning: Invalid reference, using default\n"); // TODO: add line num logic to this
         return def_int;
@@ -672,15 +800,15 @@ double idoc_get_double(Idoc *idoc, double def_double, ...) {
     va_list args;
     va_start(args, def_double);
 
-    Node *current = &idoc->root;
-    Node_Ret nr;
+    Idoc_Node *current = &idoc->root;
+    Idoc_Node_Ret nr;
     const char *part;
     while (true) {
         part = va_arg(args, const char *);
         if (part == NULL) {
             break; // reached the end
         }
-        nr = node_find_child(current, sv_from_cstr(part));
+        nr = node_find_child(current, cstr_to_sv(part));
         if (!nr.is_valid) {
             fprintf(stderr, "Warning: Could not find attribute \"%s\", using default (%f)\n", part, def_double);
             va_end(args);
@@ -689,7 +817,7 @@ double idoc_get_double(Idoc *idoc, double def_double, ...) {
         current = nr.node;
     }
     va_end(args);
-    Value *value = idoc_resolve_value(idoc, &current->value);
+    Idoc_Value *value = idoc_resolve_value(idoc, &current->value);
     if (value == NULL) {
         fprintf(stderr, "Warning: Invalid reference, using default\n"); // TODO: add line num logic to this
         return def_double;
@@ -700,51 +828,53 @@ double idoc_get_double(Idoc *idoc, double def_double, ...) {
     return value->floating;
 }
 
-const char *idoc_get_cstr(Idoc *idoc, const char *def_str, ...) {
+char *idoc_get_cstr(Idoc *idoc, const char *def_str, ...) {
     va_list args;
     va_start(args, def_str);
 
-    Node *current = &idoc->root;
-    Node_Ret nr;
+    Idoc_Node *current = &idoc->root;
+    Idoc_Node_Ret nr;
     const char *part;
+    char *cp_def_str = cstr_copy(def_str);
     while (true) {
         part = va_arg(args, const char *);
         if (part == NULL) {
             break; // reached the end
         }
-        nr = node_find_child(current, sv_from_cstr(part));
+        nr = node_find_child(current, cstr_to_sv(part));
         if (!nr.is_valid) {
-            fprintf(stderr, "Warning: Could not find attribute \"%s\", using default (%s)\n", part, def_str);
+            fprintf(stderr, "Warning: Could not find attribute \"%s\", using default (%s)\n", part, cp_def_str);
             va_end(args);
-            return def_str;
+            return cp_def_str;
         }
         current = nr.node;
     }
     va_end(args);
-    Value *value = idoc_resolve_value(idoc, &current->value);
+    Idoc_Value *value = idoc_resolve_value(idoc, &current->value);
     if (value == NULL) {
-        fprintf(stderr, "Warning: Invalid reference, using default (%s)\n", def_str); // TODO: add line num logic to this
-        return def_str;
+        fprintf(stderr, "Warning: Invalid reference, using default (%s)\n", cp_def_str); // TODO: add line num logic to this
+        return cp_def_str;
     } else if (value->type != VALUE_STRING) {
-        fprintf(stderr, "Warning: Invalid type, using default (%s)\n", def_str); // TODO: add line num logic to this
-        return def_str;
+        fprintf(stderr, "Warning: Invalid type, using default (%s)\n", cp_def_str); // TODO: add line num logic to this
+        return cp_def_str;
     }
-    return nob_temp_sv_to_cstr(value->string);
+    free(cp_def_str);
+    return sv_to_cstr(value->string);
 }
 
 bool idoc_get_tuple_int(Idoc *idoc, int *out, size_t capacity, ...) {
     va_list args;
     va_start(args, capacity);
 
-    Node *current = &idoc->root;
-    Node_Ret nr;
+    Idoc_Node *current = &idoc->root;
+    Idoc_Node_Ret nr;
     const char *part;
     while (true) {
         part = va_arg(args, const char *);
         if (part == NULL) {
             break; // reached the end
         }
-        nr = node_find_child(current, sv_from_cstr(part));
+        nr = node_find_child(current, cstr_to_sv(part));
         if (!nr.is_valid) {
             fprintf(stderr, "Warning: Could not find attribute \"%s\"\n", part);
             va_end(args);
@@ -753,7 +883,7 @@ bool idoc_get_tuple_int(Idoc *idoc, int *out, size_t capacity, ...) {
         current = nr.node;
     }
     va_end(args);
-    Value *value = idoc_resolve_value(idoc, &current->value);
+    Idoc_Value *value = idoc_resolve_value(idoc, &current->value);
     if (value == NULL) {
         fprintf(stderr, "Warning: Invalid reference, using default\n"); // TODO: add line num logic to this
         return false;
@@ -777,15 +907,15 @@ bool idoc_get_tuple_double(Idoc *idoc, double *out, size_t capacity, ...) {
     va_list args;
     va_start(args, capacity);
 
-    Node *current = &idoc->root;
-    Node_Ret nr;
+    Idoc_Node *current = &idoc->root;
+    Idoc_Node_Ret nr;
     const char *part;
     while (true) {
         part = va_arg(args, const char *);
         if (part == NULL) {
             break; // reached the end
         }
-        nr = node_find_child(current, sv_from_cstr(part));
+        nr = node_find_child(current, cstr_to_sv(part));
         if (!nr.is_valid) {
             fprintf(stderr, "Warning: Could not find attribute \"%s\"\n", part);
             va_end(args);
@@ -794,7 +924,7 @@ bool idoc_get_tuple_double(Idoc *idoc, double *out, size_t capacity, ...) {
         current = nr.node;
     }
     va_end(args);
-    Value *value = idoc_resolve_value(idoc, &current->value);
+    Idoc_Value *value = idoc_resolve_value(idoc, &current->value);
     if (value == NULL) {
         fprintf(stderr, "Warning: Invalid reference, using default\n"); // TODO: add line num logic to this
         return false;
@@ -818,15 +948,15 @@ bool idoc_get_tuple_cstr(Idoc *idoc, const char **out, size_t capacity, ...) {
     va_list args;
     va_start(args, capacity);
 
-    Node *current = &idoc->root;
-    Node_Ret nr;
+    Idoc_Node *current = &idoc->root;
+    Idoc_Node_Ret nr;
     const char *part;
     while (true) {
         part = va_arg(args, const char *);
         if (part == NULL) {
             break; // reached the end
         }
-        nr = node_find_child(current, sv_from_cstr(part));
+        nr = node_find_child(current, cstr_to_sv(part));
         if (!nr.is_valid) {
             fprintf(stderr, "Warning: Could not find attribute \"%s\"\n", part);
             va_end(args);
@@ -835,7 +965,7 @@ bool idoc_get_tuple_cstr(Idoc *idoc, const char **out, size_t capacity, ...) {
         current = nr.node;
     }
     va_end(args);
-    Value *value = idoc_resolve_value(idoc, &current->value);
+    Idoc_Value *value = idoc_resolve_value(idoc, &current->value);
     if (value == NULL) {
         fprintf(stderr, "Warning: Invalid reference, using default\n"); // TODO: add line num logic to this
         return false;
@@ -850,11 +980,42 @@ bool idoc_get_tuple_cstr(Idoc *idoc, const char **out, size_t capacity, ...) {
         if (value->tuple.items[i].type != VALUE_STRING) {
             return false;
         }
-        out[i] = temp_sv_to_cstr(value->tuple.items[i].string);
+        out[i] = sv_to_cstr(value->tuple.items[i].string);
     }
     return true;
 }
-// #define ARRAY_LEN(arr) (sizeof(arr) / sizeof((arr)[0]))
-// types: int, double, cstring
-#define idoc_get(type, idoc, def, ...) idoc_get_##type(idoc, def, __VA_ARGS__, NULL)
-#define idoc_get_tuple(type, idoc, out, ...) idoc_get_tuple_##type(idoc, out, ARRAY_LEN(out), __VA_ARGS__, NULL)
+
+void value_free(Idoc_Value *value) {
+    switch (value->type) {
+    case VALUE_REFERENCE: {
+        free(value->ref.items);
+    } break;
+    case VALUE_TUPLE: {
+        for (size_t i = 0; i < value->tuple.count; i++) {
+            value_free(&value->tuple.items[i]);
+        }
+        free(value->tuple.items);
+    } break;
+    default: break;
+    }
+}
+
+void node_free(Idoc_Node *node) {
+    value_free(&node->value);
+    for (size_t i = 0; i < node->count; i++) {
+        node_free(&node->items[i]);
+    }
+    free(node->items);
+}
+
+void idoc_free(Idoc *idoc) {
+    node_free(&idoc->root);
+    free(idoc->__file_content.items);
+}
+
+#define ARRAY_LEN(arr) (sizeof(arr) / sizeof((arr)[0]))
+// types: int, double, cstr
+#define idoc_get(idoc, type, def, ...) idoc_get_##type(idoc, def, __VA_ARGS__, NULL)
+#define idoc_get_tuple(idoc, type, out, ...) idoc_get_tuple_##type(idoc, out, ARRAY_LEN(out), __VA_ARGS__, NULL)
+
+#endif // IDOC_IMPLEMENTATION
